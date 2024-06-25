@@ -88,8 +88,7 @@ class TMInterface:
     def reset_camera(self):
         self.sock.sendall(struct.pack("i", MessageType.C_RESET_CAMERA))
 
-    def get_simulation_state(self):
-        self.sock.sendall(struct.pack("i", MessageType.C_GET_SIMULATION_STATE))
+    def read_simulation_state(self):
         state_length = self._read_int32()
         state = SimStateData(self.sock.recv(state_length, socket.MSG_WAITALL))
         state.cp_data.resize(CheckpointData.cp_states_field, state.cp_data.cp_states_length)

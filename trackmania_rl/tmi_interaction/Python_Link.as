@@ -144,7 +144,7 @@ int HandleMessage()
 
         case MessageType::CRewindToCurrentState: {
             if (simManager.InRace) {
-                simManager.RewindToState(simManager.SaveState());
+                // simManager.RewindToState(simManager.SaveState());
             }
             break;
         }
@@ -279,9 +279,21 @@ void OnRunStep(SimulationManager@ simManager){
         print("Server: OnRunStep " + simManager.RaceTime);
     }
 
+    simManager.SimulationOnly = true;
+
     if(simManager.RaceTime%on_step_period==0 || simManager.TickTime>simManager.RaceTime){
         clientSock.Write(MessageType::SCRunStepSync);
         clientSock.Write(simManager.RaceTime);
+
+        auto@ state = simManager.SaveState();
+        const auto@ data = state.ToArray();
+        clientSock.Write(int(data.Length));
+        clientSock.Write(data);
+
+        Graphics::ForceGameRender();
+        auto@ frame = Graphics::CaptureScreenshot(vec2(160,120));
+        clientSock.Write(frame);
+
         WaitForResponse(MessageType::SCRunStepSync);
     }
 }
@@ -297,6 +309,12 @@ void OnCheckpointCountChanged(SimulationManager@ simManager, int current, int ta
     clientSock.Write(MessageType::SCCheckpointCountChangedSync);
     clientSock.Write(current);
     clientSock.Write(target);
+
+    auto@ state = simManager.SaveState();
+    const auto@ data = state.ToArray();
+    clientSock.Write(int(data.Length));
+    clientSock.Write(data);
+
     WaitForResponse(MessageType::SCCheckpointCountChangedSync);
 }
 
@@ -315,6 +333,7 @@ void OnLapCountChanged(SimulationManager@ simManager, int current, int target){
 }
 
 void OnConnect(){
+    Graphics::FocusGameWindow();
     clientSock.Write(MessageType::SCOnConnectSync);
     WaitForResponse(MessageType::SCOnConnectSync);
 }
@@ -361,16 +380,6 @@ void Render(){
         }
         else{
             on_connect_queued = true;
-        }
-    }
-    if(next_frame_requested_H>=0){
-        const auto@ frame = Graphics::CaptureScreenshot(vec2(next_frame_requested_W,next_frame_requested_H));
-        clientSock.Write(MessageType::SCRequestedFrameSync);
-        clientSock.Write(frame);
-        WaitForResponse(MessageType::SCRequestedFrameSync);
-        next_frame_requested_H = -1;
-        if(debug){
-            print("Got response from client for SCRequestedFrameSync");
         }
     }
 }

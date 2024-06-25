@@ -340,133 +340,6 @@ class GameInstanceManager:
 
         try:
             while not this_rollout_is_finished:
-                if compute_action_asap_floats:
-                    pc2 = time.perf_counter_ns()
-
-                    sim_state_race_time = last_known_simulation_state.race_time
-                    sim_state_dyna_current = last_known_simulation_state.dyna.current_state
-                    sim_state_mobil = last_known_simulation_state.scene_mobil
-                    sim_state_mobil_engine = sim_state_mobil.engine
-                    simulation_wheels = last_known_simulation_state.simulation_wheels
-                    wheel_state = [simulation_wheels[i].real_time_state for i in range(4)]
-                    sim_state_position = np.array(
-                        sim_state_dyna_current.position,
-                        dtype=np.float32,
-                    )  # (3,)
-                    sim_state_orientation = sim_state_dyna_current.rotation.to_numpy().T  # (3, 3)
-                    sim_state_velocity = np.array(
-                        sim_state_dyna_current.linear_speed,
-                        dtype=np.float32,
-                    )  # (3,)
-                    sim_state_angular_speed = np.array(
-                        sim_state_dyna_current.angular_speed,
-                        dtype=np.float32,
-                    )  # (3,)
-
-                    gearbox_state = sim_state_mobil.gearbox_state
-                    counter_gearbox_state = 0
-                    if gearbox_state != 0 and len(rollout_results["car_gear_and_wheels"]) > 0:
-                        counter_gearbox_state = 1 + rollout_results["car_gear_and_wheels"][-1][15]
-
-                    sim_state_car_gear_and_wheels = np.array(
-                        [
-                            *(ws.is_sliding for ws in wheel_state),  # Bool
-                            *(ws.has_ground_contact for ws in wheel_state),  # Bool
-                            *(ws.damper_absorb for ws in wheel_state),  # 0.005 min, 0.15 max, 0.01 typically
-                            gearbox_state,  # Bool, except 2 at startup
-                            sim_state_mobil_engine.gear,  # 0 -> 5 approx
-                            sim_state_mobil_engine.actual_rpm,  # 0-10000 approx
-                            counter_gearbox_state,  # Up to typically 28 when changing gears
-                            *(
-                                i == contact_materials.physics_behavior_fromint[ws.contact_material_id & 0xFFFF]
-                                for ws in wheel_state
-                                for i in range(config_copy.n_contact_material_physics_behavior_types)
-                            ),
-                        ],
-                        dtype=np.float32,
-                    )
-                    if sim_state_position[1] > config_copy.deck_height:
-                        current_zone_idx = update_current_zone_idx(
-                            current_zone_idx,
-                            zone_centers,
-                            sim_state_position,
-                            config_copy.max_allowable_distance_to_virtual_checkpoint,
-                            self.next_real_checkpoint_positions,
-                            self.max_allowable_distance_to_real_checkpoint,
-                        )
-
-                    if current_zone_idx > rollout_results["furthest_zone_idx"]:
-                        last_progress_improvement_ms = sim_state_race_time
-                        rollout_results["furthest_zone_idx"] = current_zone_idx
-
-                    rollout_results["current_zone_idx"].append(current_zone_idx)
-
-                    meters_in_current_zone = np.clip(
-                        (sim_state_position - zone_transitions[current_zone_idx - 1]).dot(
-                            normalized_vector_along_track_axis[current_zone_idx - 1]
-                        ),
-                        0,
-                        distance_between_zone_transitions[current_zone_idx - 1],
-                    )
-
-                    distance_since_track_begin = (
-                        distance_from_start_track_to_prev_zone_transition[current_zone_idx - 1] + meters_in_current_zone
-                    )
-
-                    # ==== Construct features
-                    state_zone_center_coordinates_in_car_reference_system = sim_state_orientation.dot(
-                        (
-                            zone_centers[
-                                current_zone_idx : current_zone_idx
-                                + config_copy.one_every_n_zone_centers_in_inputs
-                                * config_copy.n_zone_centers_in_inputs : config_copy.one_every_n_zone_centers_in_inputs,
-                                :,
-                            ]
-                            - sim_state_position
-                        ).T
-                    ).T  # (n_zone_centers_in_inputs, 3)
-                    state_y_map_vector_in_car_reference_system = sim_state_orientation.dot(np.array([0, 1, 0]))
-                    state_car_velocity_in_car_reference_system = sim_state_orientation.dot(sim_state_velocity)
-                    state_car_angular_velocity_in_car_reference_system = sim_state_orientation.dot(sim_state_angular_speed)
-
-                    previous_actions = [
-                        config_copy.inputs[rollout_results["actions"][k] if k >= 0 else config_copy.action_forward_idx]
-                        for k in range(
-                            len(rollout_results["actions"]) - config_copy.n_prev_actions_in_inputs, len(rollout_results["actions"])
-                        )
-                    ]
-
-                    floats = np.hstack(
-                        (
-                            0,
-                            np.array(
-                                [
-                                    previous_action[input_str]
-                                    for previous_action in previous_actions
-                                    for input_str in ["accelerate", "brake", "left", "right"]
-                                ]
-                            ),  # NEW
-                            sim_state_car_gear_and_wheels.ravel(),  # NEW
-                            state_car_angular_velocity_in_car_reference_system.ravel(),  # NEW
-                            state_car_velocity_in_car_reference_system.ravel(),
-                            state_y_map_vector_in_car_reference_system.ravel(),
-                            state_zone_center_coordinates_in_car_reference_system.ravel(),
-                            min(
-                                config_copy.margin_to_announce_finish_meters,
-                                distance_from_start_track_to_prev_zone_transition[
-                                    len(zone_centers) - config_copy.n_zone_centers_extrapolate_after_end_of_map
-                                ]
-                                - distance_since_track_begin,
-                            ),
-                            sim_state_mobil.is_freewheeling,
-                        )
-                    ).astype(np.float32)
-
-                    pc5 = time.perf_counter_ns()
-                    instrumentation__grab_floats += pc5 - pc2
-
-                    compute_action_asap_floats = False
-
                 msgtype = self.iface._read_int32()
 
                 # =============================================
@@ -474,6 +347,9 @@ class GameInstanceManager:
                 # =============================================
                 if msgtype == int(MessageType.SC_RUN_STEP_SYNC):
                     _time = self.iface._read_int32()
+
+                    state = self.iface.read_simulation_state()
+                    frame = self.grab_screen()
 
                     if _time > 0 and this_rollout_has_seen_t_negative:
                         if _time % 50 == 0:
@@ -495,7 +371,7 @@ class GameInstanceManager:
                         self.UI_disabled = True
 
                     if _time == 0 and (map_path not in self.start_states):
-                        self.start_states[map_path] = self.iface.get_simulation_state()
+                        self.start_states[map_path] = state
 
                     if (not give_up_signal_has_been_sent) and (map_path != self.latest_map_path_requested):
                         self.request_map(map_path, zone_centers)
@@ -516,7 +392,7 @@ class GameInstanceManager:
                         and not this_rollout_is_finished
                     ):
                         # FAILED TO FINISH IN TIME
-                        simulation_state = self.iface.get_simulation_state()
+                        simulation_state = state
                         race_time = max([simulation_state.race_time, 1e-12])  # Epsilon trick to avoid division by zero
 
                         end_race_stats["race_finished"] = False
@@ -547,14 +423,200 @@ class GameInstanceManager:
                         this_rollout_has_seen_t_negative |= _time < 0
 
                         if _time >= 0 and _time % (10 * self.run_steps_per_action) == 0 and this_rollout_has_seen_t_negative:
-                            last_known_simulation_state = self.iface.get_simulation_state()
-                            self.iface.rewind_to_current_state()
-                            self.request_speed(0)
+                            last_known_simulation_state = state
+                            # self.iface.rewind_to_current_state()
+                            # self.request_speed(0)
                             compute_action_asap = True  # not self.iface.race_finished() #Paranoid check that the race is not finished, which I think could happen because on_step comes before on_cp_count
                             if compute_action_asap:
                                 compute_action_asap_floats = True
                                 frame_expected = True
-                                self.iface.request_frame(config_copy.W_downsized, config_copy.H_downsized)
+                                # self.iface.request_frame(config_copy.W_downsized, config_copy.H_downsized)
+                                # frame_msgtype = self.iface._read_int32()
+                                # frame = self.grab_screen()
+
+                                if compute_action_asap_floats:
+                                    pc2 = time.perf_counter_ns()
+
+                                    sim_state_race_time = last_known_simulation_state.race_time
+                                    sim_state_dyna_current = last_known_simulation_state.dyna.current_state
+                                    sim_state_mobil = last_known_simulation_state.scene_mobil
+                                    sim_state_mobil_engine = sim_state_mobil.engine
+                                    simulation_wheels = last_known_simulation_state.simulation_wheels
+                                    wheel_state = [simulation_wheels[i].real_time_state for i in range(4)]
+                                    sim_state_position = np.array(
+                                        sim_state_dyna_current.position,
+                                        dtype=np.float32,
+                                    )  # (3,)
+                                    sim_state_orientation = sim_state_dyna_current.rotation.to_numpy().T  # (3, 3)
+                                    sim_state_velocity = np.array(
+                                        sim_state_dyna_current.linear_speed,
+                                        dtype=np.float32,
+                                    )  # (3,)
+                                    sim_state_angular_speed = np.array(
+                                        sim_state_dyna_current.angular_speed,
+                                        dtype=np.float32,
+                                    )  # (3,)
+
+                                    gearbox_state = sim_state_mobil.gearbox_state
+                                    counter_gearbox_state = 0
+                                    if gearbox_state != 0 and len(rollout_results["car_gear_and_wheels"]) > 0:
+                                        counter_gearbox_state = 1 + rollout_results["car_gear_and_wheels"][-1][15]
+
+                                    sim_state_car_gear_and_wheels = np.array(
+                                        [
+                                            *(ws.is_sliding for ws in wheel_state),  # Bool
+                                            *(ws.has_ground_contact for ws in wheel_state),  # Bool
+                                            *(ws.damper_absorb for ws in wheel_state),  # 0.005 min, 0.15 max, 0.01 typically
+                                            gearbox_state,  # Bool, except 2 at startup
+                                            sim_state_mobil_engine.gear,  # 0 -> 5 approx
+                                            sim_state_mobil_engine.actual_rpm,  # 0-10000 approx
+                                            counter_gearbox_state,  # Up to typically 28 when changing gears
+                                            *(
+                                                i == contact_materials.physics_behavior_fromint[ws.contact_material_id & 0xFFFF]
+                                                for ws in wheel_state
+                                                for i in range(config_copy.n_contact_material_physics_behavior_types)
+                                            ),
+                                        ],
+                                        dtype=np.float32,
+                                    )
+                                    if sim_state_position[1] > config_copy.deck_height:
+                                        current_zone_idx = update_current_zone_idx(
+                                            current_zone_idx,
+                                            zone_centers,
+                                            sim_state_position,
+                                            config_copy.max_allowable_distance_to_virtual_checkpoint,
+                                            self.next_real_checkpoint_positions,
+                                            self.max_allowable_distance_to_real_checkpoint,
+                                        )
+
+                                    if current_zone_idx > rollout_results["furthest_zone_idx"]:
+                                        last_progress_improvement_ms = sim_state_race_time
+                                        rollout_results["furthest_zone_idx"] = current_zone_idx
+
+                                    rollout_results["current_zone_idx"].append(current_zone_idx)
+
+                                    meters_in_current_zone = np.clip(
+                                        (sim_state_position - zone_transitions[current_zone_idx - 1]).dot(
+                                            normalized_vector_along_track_axis[current_zone_idx - 1]
+                                        ),
+                                        0,
+                                        distance_between_zone_transitions[current_zone_idx - 1],
+                                    )
+
+                                    distance_since_track_begin = (
+                                        distance_from_start_track_to_prev_zone_transition[current_zone_idx - 1] + meters_in_current_zone
+                                    )
+
+                                    # ==== Construct features
+                                    state_zone_center_coordinates_in_car_reference_system = sim_state_orientation.dot(
+                                        (
+                                            zone_centers[
+                                                current_zone_idx : current_zone_idx
+                                                + config_copy.one_every_n_zone_centers_in_inputs
+                                                * config_copy.n_zone_centers_in_inputs : config_copy.one_every_n_zone_centers_in_inputs,
+                                                :,
+                                            ]
+                                            - sim_state_position
+                                        ).T
+                                    ).T  # (n_zone_centers_in_inputs, 3)
+                                    state_y_map_vector_in_car_reference_system = sim_state_orientation.dot(np.array([0, 1, 0]))
+                                    state_car_velocity_in_car_reference_system = sim_state_orientation.dot(sim_state_velocity)
+                                    state_car_angular_velocity_in_car_reference_system = sim_state_orientation.dot(sim_state_angular_speed)
+
+                                    previous_actions = [
+                                        config_copy.inputs[rollout_results["actions"][k] if k >= 0 else config_copy.action_forward_idx]
+                                        for k in range(
+                                            len(rollout_results["actions"]) - config_copy.n_prev_actions_in_inputs, len(rollout_results["actions"])
+                                        )
+                                    ]
+
+                                    floats = np.hstack(
+                                        (
+                                            0,
+                                            np.array(
+                                                [
+                                                    previous_action[input_str]
+                                                    for previous_action in previous_actions
+                                                    for input_str in ["accelerate", "brake", "left", "right"]
+                                                ]
+                                            ),  # NEW
+                                            sim_state_car_gear_and_wheels.ravel(),  # NEW
+                                            state_car_angular_velocity_in_car_reference_system.ravel(),  # NEW
+                                            state_car_velocity_in_car_reference_system.ravel(),
+                                            state_y_map_vector_in_car_reference_system.ravel(),
+                                            state_zone_center_coordinates_in_car_reference_system.ravel(),
+                                            min(
+                                                config_copy.margin_to_announce_finish_meters,
+                                                distance_from_start_track_to_prev_zone_transition[
+                                                    len(zone_centers) - config_copy.n_zone_centers_extrapolate_after_end_of_map
+                                                ]
+                                                - distance_since_track_begin,
+                                            ),
+                                            sim_state_mobil.is_freewheeling,
+                                        )
+                                    ).astype(np.float32)
+
+                                    pc5 = time.perf_counter_ns()
+                                    instrumentation__grab_floats += pc5 - pc2
+
+                                    compute_action_asap_floats = False
+
+                                frame_expected = False
+                                if (
+                                    give_up_signal_has_been_sent
+                                    and this_rollout_has_seen_t_negative
+                                    and not this_rollout_is_finished
+                                    and compute_action_asap
+                                ):
+                                    pc6 = time.perf_counter_ns()
+                                    instrumentation__grab_frame += pc6 - pc5
+                                    # assert self.latest_tm_engine_speed_requested == 0
+                                    assert not compute_action_asap_floats
+                                    frame = np.expand_dims(cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY), 0)
+                                    # frame is a numpy array of shape (1, H, W) and dtype np.uint8
+                                    rollout_results["frames"].append(frame)
+                                    pc7 = time.perf_counter_ns()
+                                    instrumentation__convert_frame += pc7 - pc6
+
+                                    (
+                                        action_idx,
+                                        action_was_greedy,
+                                        q_value,
+                                        q_values,
+                                    ) = exploration_policy(rollout_results["frames"][-1], floats)
+                                    # ) = [0, True, 0, np.zeros(6)]
+
+                                    pc8 = time.perf_counter_ns()
+                                    instrumentation__exploration_policy += pc8 - pc7
+
+                                    self.request_inputs(action_idx, rollout_results)
+                                    self.request_speed(self.running_speed)
+
+                                    if n_th_action_we_compute == 0:
+                                        end_race_stats["value_starting_frame"] = q_value
+                                        for i, val in enumerate(np.nditer(q_values)):
+                                            end_race_stats[f"q_value_{i}_starting_frame"] = val
+                                    rollout_results["meters_advanced_along_centerline"].append(distance_since_track_begin)
+                                    rollout_results["input_w"].append(config_copy.inputs[action_idx]["accelerate"])
+                                    rollout_results["actions"].append(action_idx)
+                                    rollout_results["action_was_greedy"].append(action_was_greedy)
+                                    rollout_results["car_gear_and_wheels"].append(sim_state_car_gear_and_wheels)
+                                    rollout_results["q_values"].append(q_values)
+                                    rollout_results["state_float"].append(floats)
+
+                                    compute_action_asap = False
+                                    n_th_action_we_compute += 1
+
+                                    if not self.game_activated:
+                                        _set_window_focus(self.tm_window_id)
+                                        self.game_activated = True
+                                        if config_copy.is_linux:
+                                            # With the switch to ModLoader, we observed that the game instance needs to be focused once to work properly,
+                                            # but this needs to be done late enough AND not when another game instance is starting.
+                                            self.game_spawning_lock.release()
+
+                                    instrumentation__request_inputs_and_speed += time.perf_counter_ns() - pc8
+
 
                             if _time % (10 * self.run_steps_per_action * config_copy.update_inference_network_every_n_actions) == 0:
                                 update_network()
@@ -576,7 +638,7 @@ class GameInstanceManager:
                     current = self.iface._read_int32()
                     target = self.iface._read_int32()
 
-                    simulation_state = self.iface.get_simulation_state()
+                    simulation_state = self.iface.read_simulation_state()
                     end_race_stats["cp_time_ms"].append(simulation_state.race_time)
                     # ============================
                     # BEGIN ON CP COUNT
@@ -656,63 +718,8 @@ class GameInstanceManager:
                     self.iface._read_int32()
                     self.iface._read_int32()
                     self.iface._respond_to_call(msgtype)
-                elif msgtype == int(MessageType.SC_REQUESTED_FRAME_SYNC):
-                    frame = self.grab_screen()
-                    frame_expected = False
-                    if (
-                        give_up_signal_has_been_sent
-                        and this_rollout_has_seen_t_negative
-                        and not this_rollout_is_finished
-                        and compute_action_asap
-                    ):
-                        pc6 = time.perf_counter_ns()
-                        instrumentation__grab_frame += pc6 - pc5
-                        assert self.latest_tm_engine_speed_requested == 0
-                        assert not compute_action_asap_floats
-                        frame = np.expand_dims(cv2.cvtColor(frame, cv2.COLOR_BGRA2GRAY), 0)
-                        # frame is a numpy array of shape (1, H, W) and dtype np.uint8
-                        rollout_results["frames"].append(frame)
-                        pc7 = time.perf_counter_ns()
-                        instrumentation__convert_frame += pc7 - pc6
-
-                        (
-                            action_idx,
-                            action_was_greedy,
-                            q_value,
-                            q_values,
-                        ) = exploration_policy(rollout_results["frames"][-1], floats)
-
-                        pc8 = time.perf_counter_ns()
-                        instrumentation__exploration_policy += pc8 - pc7
-
-                        self.request_inputs(action_idx, rollout_results)
-                        self.request_speed(self.running_speed)
-
-                        if n_th_action_we_compute == 0:
-                            end_race_stats["value_starting_frame"] = q_value
-                            for i, val in enumerate(np.nditer(q_values)):
-                                end_race_stats[f"q_value_{i}_starting_frame"] = val
-                        rollout_results["meters_advanced_along_centerline"].append(distance_since_track_begin)
-                        rollout_results["input_w"].append(config_copy.inputs[action_idx]["accelerate"])
-                        rollout_results["actions"].append(action_idx)
-                        rollout_results["action_was_greedy"].append(action_was_greedy)
-                        rollout_results["car_gear_and_wheels"].append(sim_state_car_gear_and_wheels)
-                        rollout_results["q_values"].append(q_values)
-                        rollout_results["state_float"].append(floats)
-
-                        compute_action_asap = False
-                        n_th_action_we_compute += 1
-
-                        if not self.game_activated:
-                            _set_window_focus(self.tm_window_id)
-                            self.game_activated = True
-                            if config_copy.is_linux:
-                                # With the switch to ModLoader, we observed that the game instance needs to be focused once to work properly,
-                                # but this needs to be done late enough AND not when another game instance is starting.
-                                self.game_spawning_lock.release()
-
-                        instrumentation__request_inputs_and_speed += time.perf_counter_ns() - pc8
-                    self.iface._respond_to_call(msgtype)
+                # elif msgtype == int(MessageType.SC_REQUESTED_FRAME_SYNC):
+                
                 elif msgtype == int(MessageType.C_SHUTDOWN):
                     self.iface.close()
                 elif msgtype == int(MessageType.SC_ON_CONNECT_SYNC):
